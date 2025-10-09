@@ -1,14 +1,52 @@
-// Minimal Blink example for PlatformIO + Arduino
-// Works on Seeed XIAO ESP32C3 using LED_BUILTIN if defined; falls back to GPIO 2.
-
+// Minimal Blink example (default) or Web-enabled app (when USE_WEB is defined)
 #include <Arduino.h>
 
-#define LED_PIN 2
+#define USE_WEB
 
-// Some boards wire the LED as active-low. Leave 0 unless you know it's inverted.
-#ifndef LED_ACTIVE_LOW
-	#define LED_ACTIVE_LOW 0
+#if defined(USE_WEB)
+	#include "core/Config.hpp"
+	#include "hal/HalDriver.hpp"
+	#include "services/WebService.hpp"
+#else
+	// Blink mode definitions
+	#ifndef LED_PIN
+		#define LED_PIN 2
+	#endif
+	#ifndef LED_ACTIVE_LOW
+		#define LED_ACTIVE_LOW 0
+	#endif
 #endif
+
+// -------------------------
+// Web App mode
+// -------------------------
+#if defined(USE_WEB)
+static HalDriver* g_hal = nullptr;
+static Config g_cfg;
+static WebService g_web;
+
+void setup() {
+	Serial.begin(115200);
+	delay(100);
+	Serial.println("\n[EzClock] Web mode starting...");
+
+	g_hal = createDefaultDriver();
+	g_hal->begin();
+
+	g_cfg.load();
+	g_web.begin(g_cfg, g_hal);
+}
+
+void loop() {
+	g_web.loop();
+	if (g_hal) g_hal->loop();
+	delay(10);
+}
+
+// -------------------------
+// Blink mode (default)
+// -------------------------
+#else
 
 void setup() {
 	pinMode(LED_PIN, OUTPUT);
@@ -32,5 +70,7 @@ void loop() {
 		digitalWrite(LED_PIN, on ? HIGH : LOW);
 	}
 
-	delay(200); // 1 Hz blink
+	delay(200); // ~2 Hz blink
 }
+
+#endif
