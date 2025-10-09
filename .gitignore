@@ -39,3 +39,34 @@
 
 # debug information files
 *.dwo
+
+
+# PlatformIO build system
+.pio/
+.piolibdeps/
+.pioenvs/
+.piodebug/
+.pio/build/
+.pio/libdeps/
+
+# VS Code / PlatformIO IDE
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Python virtualenvs (if you ever use one)
+.venv/
+env/
+venv/
+
+# Compiled firmware / binaries
+*.bin
+*.elf
+*.map
+
+# Temporary files
+*.log
+*.tmp
