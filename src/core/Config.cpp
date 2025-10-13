@@ -18,6 +18,7 @@ bool Config::load() {
   mqtt.baseTopic = p.getString("m_base", mqtt.baseTopic);
   led.colorHex = p.getString("l_hex", led.colorHex);
   led.brightness = p.getUChar("l_bri", led.brightness);
+  led.fadeMs = p.getUShort("l_fade", led.fadeMs);
   p.end();
   return true;
 }
@@ -37,6 +38,7 @@ bool Config::save() const {
   p.putString("m_base", mqtt.baseTopic);
   p.putString("l_hex", led.colorHex);
   p.putUChar("l_bri", led.brightness);
+  p.putUShort("l_fade", led.fadeMs);
   p.end();
   return true;
 }

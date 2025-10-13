@@ -23,6 +23,7 @@ struct MqttConfig {
 struct LedConfig {
   String colorHex = "#6633FF";
   uint8_t brightness = 64;
+  uint16_t fadeMs = 300; // smoothing duration for digit transitions
 };
 
 struct Config {
