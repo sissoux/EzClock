@@ -55,6 +55,21 @@ namespace TimeSvc {
   }
 
   void loop() {
+    #ifdef INHIBIT_TIME_SYNC
+    // Keep reporting unsynced for debugging; don't ever mark synced
+    // Still allow Wi‑Fi connection attempts so other features work
+    if (!wifiConnected && WiFi.status() == WL_CONNECTED) {
+      wifiConnected = true;
+      LOGI("WiFi connected: %s", WiFi.localIP().toString().c_str());
+    }
+    // Throttle log
+    uint32_t msDbg = millis();
+    if (msDbg - lastAttempt > 3000) {
+      LOGI("[DBG] INHIBIT_TIME_SYNC active (simulating unsynced)");
+      lastAttempt = msDbg;
+    }
+    return;
+    #endif
     // Detect late WiFi connection and start NTP
     if (!wifiConnected && WiFi.status() == WL_CONNECTED) {
       wifiConnected = true;
@@ -66,9 +81,9 @@ namespace TimeSvc {
     }
     if (!wifiConnected) return;
     if (synced) {
-      uint32_t ms = millis();
-      if (ms - lastLog >= 10000) {
-        lastLog = ms;
+      uint32_t msSync = millis();
+      if (msSync - lastLog >= 10000) {
+        lastLog = msSync;
         time_t t = time(nullptr);
         struct tm tmv; localtime_r(&t, &tmv);
         LOGI("Time: %04d-%02d-%02d %02d:%02d:%02d", tmv.tm_year+1900, tmv.tm_mon+1, tmv.tm_mday, tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
@@ -83,15 +98,21 @@ namespace TimeSvc {
       return;
     }
     // throttle logs/attempts
-    uint32_t ms = millis();
-    if (ms - lastAttempt > 3000) {
+    uint32_t msThrottle = millis();
+    if (msThrottle - lastAttempt > 3000) {
       LOGI("Waiting for NTP...");
-      lastAttempt = ms;
+      lastAttempt = msThrottle;
     }
   }
 
   bool isWifiConnected() { return wifiConnected; }
-  bool isSynced() { return synced; }
+  bool isSynced() {
+  #ifdef INHIBIT_TIME_SYNC
+    return false;
+  #else
+    return synced;
+  #endif
+  }
 
   bool getLocal(struct tm& out) {
     time_t t = time(nullptr);

@@ -14,6 +14,9 @@ public:
 
   // Optional: runtime smoothing/transition control; default no-op
   virtual void setSmoothing(uint16_t /*ms*/) {}
+
+  // Optional: restart any driver-specific startup/demo animation
+  virtual void restartAnimation() {}
 };
 
 HalDriver* createDefaultDriver();
