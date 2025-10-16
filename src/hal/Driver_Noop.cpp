@@ -93,7 +93,7 @@ private:
 };
 
 // Factory: provide the default driver instance used by the app
-#ifndef USE_7SEGSTRIP
+#if !defined(USE_7SEGSTRIP) && !defined(USE_QLOCK3030)
 HalDriver* createDefaultDriver() {
   static TemplateDriver d;
   return &d;

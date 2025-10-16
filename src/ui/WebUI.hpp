@@ -59,7 +59,12 @@ static const char WEB_UI[] PROGMEM = R"HTML(
   </div>
   <fieldset class="row">
     <legend>Wi‑Fi</legend>
-    <div class="row"><label for="ssid">SSID</label> <input id="ssid" type="text" placeholder="YourWiFi"></div>
+    <div class="row" style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
+      <label for="ssid">SSID</label>
+      <input id="ssid" type="text" placeholder="YourWiFi" oninput="syncSsidInput()">
+      <select id="ssidList" onchange="selectSsid(this.value)"><option value="">-- scanning... --</option></select>
+      <button type="button" onclick="scanSsids()">Scan</button>
+    </div>
     <div class="row"><label for="pwd">Password</label> <input id="pwd" type="password" placeholder="••••••••"></div>
     <div class="row"><button onclick="saveWifi()">Save Wi‑Fi</button></div>
     <small>Device stays in AP+STA; after saving, it will try to connect to your Wi‑Fi.</small>
@@ -210,9 +215,11 @@ static const char WEB_UI[] PROGMEM = R"HTML(
       }
     }
 
-    // initialize preview on load and fetch status
+  // initialize preview on load and fetch status
     updatePreview();
     loadStatus();
+  // Kick off initial Wi‑Fi scan
+  scanSsids();
 
     async function saveWifi(){
       const ssid = document.getElementById('ssid').value.trim();
@@ -227,6 +234,50 @@ static const char WEB_UI[] PROGMEM = R"HTML(
       } catch(e) {
         console.error('[UI] /api/wifi error', e);
         alert('Error while saving Wi‑Fi');
+      }
+    }
+
+    function syncSsidInput(){
+      const v = document.getElementById('ssid').value;
+      const sel = document.getElementById('ssidList');
+      // If input matches an option, select it; else select none
+      let matched = false;
+      for (const opt of sel.options){
+        if (opt.value === v){ sel.value = v; matched = true; break; }
+      }
+      if (!matched) sel.value = '';
+    }
+
+    function selectSsid(v){
+      document.getElementById('ssid').value = v;
+    }
+
+    async function scanSsids(){
+      const sel = document.getElementById('ssidList');
+      sel.innerHTML = '<option value="">-- scanning... --</option>';
+      try {
+        const res = await fetch('/api/wifi/scan');
+        if (!res.ok){ sel.innerHTML = '<option value="">scan failed</option>'; return; }
+        const js = await res.json();
+        const list = Array.isArray(js.list) ? js.list : [];
+        // Sort by RSSI descending
+        list.sort((a,b)=> (b.rssi||-999) - (a.rssi||-999));
+        // Build options
+        let opts = '<option value="">-- select SSID --</option>';
+        for (const ap of list){
+          const ssid = ap.ssid || '';
+          if (!ssid) continue;
+          const rssi = ap.rssi;
+          const enc = ap.enc;
+          const strength = (rssi>=-55 ? '🟢' : rssi>=-70 ? '🟡' : '🟠');
+          opts += `<option value="${ssid}">${strength} ${ssid} (${rssi} dBm)</option>`;
+        }
+        sel.innerHTML = opts || '<option value="">(no networks)</option>';
+        // Re-apply selection if input already has value
+        syncSsidInput();
+      } catch(e) {
+        console.warn('[UI] scanSsids error', e);
+        sel.innerHTML = '<option value="">scan error</option>';
       }
     }
 

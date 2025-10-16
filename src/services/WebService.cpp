@@ -185,6 +185,34 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
     }
   });
 
+  // Scan nearby Wi‑Fi networks
+  server.on("/api/wifi/scan", HTTP_GET, [](AsyncWebServerRequest* req){
+    // Synchronous scan; typical duration ~1-3s
+    int n = WiFi.scanNetworks(/*async=*/false, /*hidden=*/true);
+    if (n < 0) n = 0;
+    // Build JSON: {count:n, list:[{ssid:"...", rssi:-55, enc:WIFI_AUTH_*}, ...]}
+    String json; json.reserve(64 + n * 48);
+    json += "{\"count\":" + String(n) + ",\"list\":[";
+    for (int i = 0; i < n; ++i) {
+  if (i) json += ",";
+  String ssid = WiFi.SSID(i);
+  int32_t rssi = WiFi.RSSI(i);
+#ifdef ARDUINO_ARCH_ESP32
+  int enc = (int)WiFi.encryptionType(i);
+#else
+  int enc = (int)WiFi.encryptionType(i);
+#endif
+  // Escape quotes in SSID (rare)
+  ssid.replace("\\", "\\\\");
+  ssid.replace("\"", "\\\"");
+  json += "{\"ssid\":\"" + ssid + "\",\"rssi\":" + String(rssi) + ",\"enc\":" + String(enc) + "}";
+    }
+    json += "]}";
+    // Free scan results
+    WiFi.scanDelete();
+    req->send(200, "application/json", json);
+  });
+
   server.on("/api/timezone", HTTP_POST, [&cfg](AsyncWebServerRequest* req){
     String tz;
     if (req->hasParam("tz", true)) tz = req->getParam("tz", true)->value();
