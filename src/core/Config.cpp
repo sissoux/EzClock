@@ -16,9 +16,12 @@ bool Config::load() {
   mqtt.user = p.getString("m_user", mqtt.user);
   mqtt.pass = p.getString("m_pass", mqtt.pass);
   mqtt.baseTopic = p.getString("m_base", mqtt.baseTopic);
+  net.hostname = p.getString("net_host", net.hostname);
   led.colorHex = p.getString("l_hex", led.colorHex);
   led.brightness = p.getUChar("l_bri", led.brightness);
   led.fadeMs = p.getUShort("l_fade", led.fadeMs);
+  led.autoHue = p.getBool("l_ah_en", led.autoHue);
+  led.autoHueDegPerMin = p.getUShort("l_ah_dpm", led.autoHueDegPerMin);
   p.end();
   return true;
 }
@@ -36,9 +39,12 @@ bool Config::save() const {
   p.putString("m_user", mqtt.user);
   p.putString("m_pass", mqtt.pass);
   p.putString("m_base", mqtt.baseTopic);
+  p.putString("net_host", net.hostname);
   p.putString("l_hex", led.colorHex);
   p.putUChar("l_bri", led.brightness);
   p.putUShort("l_fade", led.fadeMs);
+  p.putBool("l_ah_en", led.autoHue);
+  p.putUShort("l_ah_dpm", led.autoHueDegPerMin);
   p.end();
   return true;
 }

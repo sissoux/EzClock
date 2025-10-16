@@ -11,6 +11,7 @@
 #include "HalDriver.hpp"
 #include "../services/TimeService.hpp"
 #include "../core/Log.hpp"
+#include "../core/Config.hpp"
 #include <FastLED.h>
 #include <time.h>
 
@@ -40,6 +41,12 @@ public:
     _colorR = 255; _colorG = 255; _colorB = 255; // default white
     _lastMinute = 255; // force first render
     _dirty = true;
+    _lastHueUpdateMs = millis();
+  }
+
+  void setAutoHue(bool enabled, uint16_t degPerMin) override {
+    _autoHueEnabled = enabled;
+    _autoHueDegPerMin = degPerMin;
   }
 
   void loop() override {
@@ -70,6 +77,27 @@ public:
     const uint8_t hh = tmv.tm_hour;  // 0..23
     const uint8_t mm = tmv.tm_min;   // 0..59
     const uint8_t ss = tmv.tm_sec;   // 0..59
+
+    // AutoHue: update base hue gradually if enabled
+    if (_autoHueEnabled) {
+      const uint32_t ms = nowMs;
+      const uint32_t dt = ms - _lastHueUpdateMs;
+      if (dt >= 1000) {
+        _lastHueUpdateMs = ms;
+        // Convert degrees per minute to degrees per second
+        float dps = (float)_autoHueDegPerMin / 60.0f;
+        _autoHueAccumDeg += dps; // per second step
+        while (_autoHueAccumDeg >= 360.0f) _autoHueAccumDeg -= 360.0f;
+        // Convert current RGB to HSV, replace H with accum, keep S/V
+        CHSV hsv = rgb2hsv_approximate(CRGB(_colorR,_colorG,_colorB));
+        hsv.h = (uint8_t)lroundf((_autoHueAccumDeg / 360.0f) * 255.0f);
+        CRGB rgb; hsv2rgb_rainbow(hsv, rgb);
+        _renderR = rgb.r; _renderG = rgb.g; _renderB = rgb.b;
+        _dirty = true;
+      }
+    } else {
+      _renderR = _colorR; _renderG = _colorG; _renderB = _colorB;
+    }
 
     // Only recompute mask when minute changes or on first render
     if (mm != _lastMinute || _firstFrame) {
@@ -103,11 +131,17 @@ public:
 private:
   CRGB _leds[QLOCK_LED_COUNT];
   uint8_t _colorR{255}, _colorG{255}, _colorB{255};
+  uint8_t _renderR{255}, _renderG{255}, _renderB{255};
   uint32_t _lastPollMs{0};
   bool _unsyncedShown{false};
   uint8_t _lastMinute{255};
   bool _dirty{false};
   bool _firstFrame{true};
+  // AutoHue
+  bool _autoHueEnabled{false};
+  uint16_t _autoHueDegPerMin{2};
+  float _autoHueAccumDeg{0.0f};
+  uint32_t _lastHueUpdateMs{0};
 
   // Geometry and masks (adapted from Example/MyQlock.h)
   // Mapping converts matrix (row,col) to strip index (150=unused)
@@ -167,7 +201,7 @@ private:
       for (uint8_t y = 0; y < QLOCK_ROWS; y++) {
         uint8_t idx = Mapping[y][x];
         if (idx >= QLOCK_LED_COUNT) continue; // 150 markers ignored
-        if (AbsoluteOn[y][x]) _leds[idx].setRGB(_colorR, _colorG, _colorB);
+        if (AbsoluteOn[y][x]) _leds[idx].setRGB(_renderR, _renderG, _renderB);
         else _leds[idx] = CRGB::Black;
       }
     }
@@ -179,7 +213,7 @@ private:
       for (uint8_t y = 0; y < QLOCK_ROWS; y++) {
         uint8_t idx = Mapping[y][x];
         if (idx >= QLOCK_LED_COUNT) continue;
-        if (AbsoluteOn[y][x]) _leds[idx].setRGB(_colorR, _colorG, _colorB);
+        if (AbsoluteOn[y][x]) _leds[idx].setRGB(_renderR, _renderG, _renderB);
         else _leds[idx] = CRGB::Black;
       }
     }
