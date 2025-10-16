@@ -8,6 +8,7 @@
 
 #ifdef USE_QLOCK3030
 
+#include <Arduino.h>
 #include "HalDriver.hpp"
 #include "../services/TimeService.hpp"
 #include "../core/Log.hpp"
@@ -31,9 +32,23 @@
 #define QLOCK_COLS 13
 #endif
 
+#ifndef AMBIANT_ANALOG_PIN
+#define AMBIANT_ANALOG_PIN 4 // A2 on XIAO ESP32C3
+#endif
+
+#ifndef AMBIANT_PULLUP_OUT_PIN
+#define AMBIANT_PULLUP_OUT_PIN 5 // Force this pin high as requested
+#endif
+
 class DriverQlock3030 : public HalDriver {
 public:
   void begin() override {
+    // Force pin 5 HIGH
+    pinMode(AMBIANT_PULLUP_OUT_PIN, OUTPUT);
+    digitalWrite(AMBIANT_PULLUP_OUT_PIN, HIGH);
+    // Prepare ADC pin (A2 / GPIO4)
+    pinMode(AMBIANT_ANALOG_PIN, INPUT);
+
     FastLED.addLeds<WS2812B, LED_PIN, GRB>(_leds, QLOCK_LED_COUNT);
     FastLED.setBrightness(128);
     fill_solid(_leds, QLOCK_LED_COUNT, CRGB::Black);
@@ -42,6 +57,7 @@ public:
     _lastMinute = 255; // force first render
     _dirty = true;
     _lastHueUpdateMs = millis();
+    _lastAdcMs = millis();
   }
 
   void setAutoHue(bool enabled, uint16_t degPerMin) override {
@@ -51,6 +67,27 @@ public:
 
   void loop() override {
     const uint32_t nowMs = millis();
+    // Periodic ADC read on A2 (GPIO4)
+    if (nowMs - _lastAdcMs >= 1000) { // 1 Hz sample
+      _lastAdcMs = nowMs;
+      _adcRaw = (uint16_t)analogRead(AMBIANT_ANALOG_PIN); // default 12-bit on ESP32 (0..4095)
+      // Push into 10-sample ring buffer
+      _adcBuf[_adcIndex] = _adcRaw;
+      _adcIndex = (_adcIndex + 1) % ADC_WINDOW;
+      if (_adcCount < ADC_WINDOW) _adcCount++;
+    }
+    // Log average over last 10 seconds every 10 seconds
+    if (nowMs - _lastAdcLogMs >= 10000) {
+      _lastAdcLogMs = nowMs;
+      if (_adcCount > 0) {
+        uint32_t sum = 0;
+        for (uint8_t i = 0; i < _adcCount; ++i) sum += _adcBuf[i];
+        uint32_t avg = (sum + (_adcCount/2)) / _adcCount; // rounded integer average
+        LOGI("ADC avg(10s)=%u from %u samples", (unsigned)avg, (unsigned)_adcCount);
+      } else {
+        LOGI("ADC avg(10s)=N/A (no samples)");
+      }
+    }
     if (nowMs - _lastPollMs < 200) {
       // Push pending color updates even if not polling time
       if (_dirty) { applyToHardware(); _dirty = false; }
@@ -142,6 +179,14 @@ private:
   uint16_t _autoHueDegPerMin{2};
   float _autoHueAccumDeg{0.0f};
   uint32_t _lastHueUpdateMs{0};
+  // ADC reading
+  uint16_t _adcRaw{0};
+  uint32_t _lastAdcMs{0};
+  static constexpr uint8_t ADC_WINDOW = 10;
+  uint16_t _adcBuf[ADC_WINDOW] = {0};
+  uint8_t _adcIndex{0};
+  uint8_t _adcCount{0};
+  uint32_t _lastAdcLogMs{0};
 
   // Geometry and masks (adapted from Example/MyQlock.h)
   // Mapping converts matrix (row,col) to strip index (150=unused)
