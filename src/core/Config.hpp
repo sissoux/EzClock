@@ -20,16 +20,24 @@ struct MqttConfig {
   String baseTopic = "ezclock";
 };
 
+struct NetConfig {
+  // Device hostname used for mDNS (.local)
+  String hostname = "ezQlock";
+};
+
 struct LedConfig {
   String colorHex = "#6633FF";
   uint8_t brightness = 64;
   uint16_t fadeMs = 300; // smoothing duration for digit transitions
+  bool autoHue = false;           // enable hue auto-rotation
+  uint16_t autoHueDegPerMin = 2;  // degrees per minute (0..360)
 };
 
 struct Config {
   WifiConfig wifi;
   NtpConfig ntp;
   MqttConfig mqtt;
+  NetConfig net;
   LedConfig led;
 
   bool load();

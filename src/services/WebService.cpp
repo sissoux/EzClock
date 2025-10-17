@@ -5,6 +5,8 @@
 #include "../ui/WebUI.hpp"
 #include "../services/TimeService.hpp"
 #include <time.h>
+#include <ctype.h>
+#include <functional>
 
 #ifdef ARDUINO_ARCH_ESP32
   #include <WiFi.h>
@@ -22,19 +24,50 @@ static AsyncWebServer server(80);
 static bool apEnabled = false;
 static String g_apSsid;
 static String g_apPass;
+static Config* g_cfgPtr = nullptr; // to access configuration in WiFi callbacks
+
+#ifdef ARDUINO_ARCH_ESP32
+static void onWifiEvent(arduino_event_id_t event, arduino_event_info_t /*info*/){
+  LOGI("WiFi event: %d", (int)event);
+  if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+    if (apEnabled) {
+      WiFi.softAPdisconnect(true);
+      apEnabled = false;
+      LOGI("AP disabled after STA connect. STA IP: %s", WiFi.localIP().toString().c_str());
+    }
+    // Start/Restart mDNS with current hostname
+    MDNS.end();
+    String host = (g_cfgPtr && g_cfgPtr->net.hostname.length()) ? g_cfgPtr->net.hostname : String("ezQlock");
+    if (MDNS.begin(host.c_str())) {
+      MDNS.addService("http", "tcp", 80);
+      LOGI("mDNS started: %s.local", host.c_str());
+    } else {
+      LOGW("mDNS start failed");
+    }
+  } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    if (!apEnabled) {
+      WiFi.softAP(g_apSsid.c_str(), g_apPass.c_str());
+      apEnabled = true;
+      LOGI("AP re-enabled: IP %s", WiFi.softAPIP().toString().c_str());
+    }
+  }
+}
+#endif
 
 void WebService::begin(Config& cfg, HalDriver* hal) {
+  g_cfgPtr = &cfg;
 
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false); // improve responsiveness on C3
-  // Set default hostname for STA/AP so device is reachable as ezclock.local via mDNS
+  // Set hostname early for STA
 #ifdef ARDUINO_ARCH_ESP32
-  WiFi.setHostname("ezclock");
-#ifdef WIFI_AP_STA
-  WiFi.softAPsetHostname("ezclock");
-#endif
-#elif defined(ARDUINO_ARCH_ESP8266)
-  WiFi.hostname("ezclock");
+  if (!cfg.net.hostname.isEmpty()) {
+    WiFi.setHostname(cfg.net.hostname.c_str());
+  }
+#else
+  if (!cfg.net.hostname.isEmpty()) {
+    WiFi.hostname(cfg.net.hostname);
+  }
 #endif
   // Optional: configure default AP IP/subnet to known 192.168.4.1
   WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
@@ -60,28 +93,13 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
 #endif
 
 #ifdef ARDUINO_ARCH_ESP32
-  WiFi.onEvent([](WiFiEvent_t e){
-    LOGI("WiFi event: %d", (int)e);
-    if (e == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-      if (apEnabled) {
-        WiFi.softAPdisconnect(true);
-        apEnabled = false;
-        LOGI("AP disabled after STA connect. STA IP: %s", WiFi.localIP().toString().c_str());
-      }
-    } else if (e == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-      if (!apEnabled) {
-        WiFi.softAP(g_apSsid.c_str(), g_apPass.c_str());
-        apEnabled = true;
-        LOGI("AP re-enabled: IP %s", WiFi.softAPIP().toString().c_str());
-      }
-    }
-  });
+  WiFi.onEvent(std::function<void(arduino_event_id_t, arduino_event_info_t)>(onWifiEvent));
 #endif
 
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest* req){
-    req->send_P(200, "text/html", WEB_UI);
+    req->send(200, "text/html", WEB_UI);
   });
 
   // Apply saved LED defaults (color and smoothing) at startup
@@ -99,6 +117,8 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
       hal->fill(r,g,b);
       hal->show();
     }
+    // AutoHue
+    hal->setAutoHue(cfg.led.autoHue, cfg.led.autoHueDegPerMin);
   }
 
   server.on("/health", HTTP_GET, [](AsyncWebServerRequest* req){
@@ -130,15 +150,26 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
     json += "\"ap_clients\":" + String(apClients) + ",";
     json += "\"sta_connected\":" + String(sta ? "true" : "false") + ",";
     json += "\"sta_ip\":\"" + staIp + "\"},";
-    json += "\"time\":{";
+  json += "\"time\":{";
     json += "\"synced\":" + String(synced ? "true" : "false") + ",";
     json += "\"epoch\":" + String((unsigned long)now) + ",";
     json += "\"iso\":\""; json += iso; json += "\"},";
+  // NTP configuration (server + timezone)
+  String tz = cfg.ntp.timezone; if (tz.length()==0) tz = "";
+  String ntps = cfg.ntp.server; if (ntps.length()==0) ntps = "";
+  json += "\"ntp\":{";
+  json += "\"server\":\"" + ntps + "\",";
+  json += "\"timezone\":\"" + tz + "\"},";
+    // network info
+    String host = cfg.net.hostname.length() ? cfg.net.hostname : String("ezQlock");
+    json += "\"net\":{\"hostname\":\"" + host + "\"},";
     String hex = cfg.led.colorHex;
     if (!hex.startsWith("#")) hex = String("#") + hex;
     json += "\"led\":{";
     json += "\"hex\":\"" + hex + "\",";
-    json += "\"fade\":" + String(cfg.led.fadeMs) + "}}";
+  json += "\"fade\":" + String(cfg.led.fadeMs) + ",";
+  json += "\"autoHue\":" + String(cfg.led.autoHue ? "true" : "false") + ",";
+  json += "\"autoHueDegPerMin\":" + String((unsigned)cfg.led.autoHueDegPerMin) + "}}";
     req->send(200, "application/json", json);
   });
 
@@ -186,6 +217,57 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
     req->send(ok ? 200 : 500, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
   });
 
+  // Update AutoHue settings
+  server.on("/api/autohue", HTTP_POST, [&cfg, hal](AsyncWebServerRequest* req){
+    String enStr = req->hasParam("enabled", true) ? req->getParam("enabled", true)->value() : String("false");
+    String dpmStr = req->hasParam("degPerMin", true) ? req->getParam("degPerMin", true)->value() : String("2");
+    enStr.trim(); dpmStr.trim();
+    bool enabled = (enStr == "1" || enStr.equalsIgnoreCase("true") || enStr == "on");
+    int dpm = dpmStr.toInt();
+    if (dpm < 0) dpm = 0; if (dpm > 360) dpm = 360;
+    cfg.led.autoHue = enabled;
+    cfg.led.autoHueDegPerMin = (uint16_t)dpm;
+    bool ok = cfg.save();
+    // If disabled, immediately apply persisted color to HAL
+    if (!enabled && hal) {
+      String hex = cfg.led.colorHex; String s = hex;
+      if (s.startsWith("#")) s.remove(0,1);
+      if (s.length() == 6) {
+        long v = strtol(s.c_str(), nullptr, 16);
+        uint8_t r = (v >> 16) & 0xFF;
+        uint8_t g = (v >> 8) & 0xFF;
+        uint8_t b = (v >> 0) & 0xFF;
+        hal->fill(r,g,b); hal->show();
+      }
+    }
+    req->send(ok ? 200 : 500, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
+  });
+
+  // Update hostname (persist and apply). Also restarts mDNS if STA has IP.
+  server.on("/api/hostname", HTTP_POST, [&cfg](AsyncWebServerRequest* req){
+    String hn = req->hasParam("hostname", true) ? req->getParam("hostname", true)->value() : String("");
+    hn.trim();
+    // Basic validation: 1..23 chars, alnum & dash only (mDNS label rules)
+    if (hn.length() == 0) hn = "ezQlock";
+    if (hn.length() > 23) hn = hn.substring(0,23);
+    for (size_t i=0;i<hn.length();++i){ char c = hn[i]; if (!(isalnum((unsigned char)c) || c=='-')) { hn.setCharAt(i, '-'); } }
+    cfg.net.hostname = hn;
+    bool ok = cfg.save();
+#ifdef ARDUINO_ARCH_ESP32
+    WiFi.setHostname(cfg.net.hostname.c_str());
+#else
+    WiFi.hostname(cfg.net.hostname);
+#endif
+    // If STA connected, restart mDNS
+    if (WiFi.status() == WL_CONNECTED) {
+      MDNS.end();
+      if (MDNS.begin(cfg.net.hostname.c_str())) {
+        MDNS.addService("http", "tcp", 80);
+      }
+    }
+    req->send(ok ? 200 : 500, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
+  });
+
   server.on("/api/wifi", HTTP_POST, [&cfg](AsyncWebServerRequest* req){
     String ssid;
     String password;
@@ -204,6 +286,34 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
     } else {
       req->send(500, "application/json", "{\"ok\":false}");
     }
+  });
+
+  // Scan nearby Wi‑Fi networks
+  server.on("/api/wifi/scan", HTTP_GET, [](AsyncWebServerRequest* req){
+    // Synchronous scan; typical duration ~1-3s
+    int n = WiFi.scanNetworks(/*async=*/false, /*hidden=*/true);
+    if (n < 0) n = 0;
+    // Build JSON: {count:n, list:[{ssid:"...", rssi:-55, enc:WIFI_AUTH_*}, ...]}
+    String json; json.reserve(64 + n * 48);
+    json += "{\"count\":" + String(n) + ",\"list\":[";
+    for (int i = 0; i < n; ++i) {
+  if (i) json += ",";
+  String ssid = WiFi.SSID(i);
+  int32_t rssi = WiFi.RSSI(i);
+#ifdef ARDUINO_ARCH_ESP32
+  int enc = (int)WiFi.encryptionType(i);
+#else
+  int enc = (int)WiFi.encryptionType(i);
+#endif
+  // Escape quotes in SSID (rare)
+  ssid.replace("\\", "\\\\");
+  ssid.replace("\"", "\\\"");
+  json += "{\"ssid\":\"" + ssid + "\",\"rssi\":" + String(rssi) + ",\"enc\":" + String(enc) + "}";
+    }
+    json += "]}";
+    // Free scan results
+    WiFi.scanDelete();
+    req->send(200, "application/json", json);
   });
 
   server.on("/api/timezone", HTTP_POST, [&cfg](AsyncWebServerRequest* req){

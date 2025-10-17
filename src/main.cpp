@@ -50,7 +50,7 @@ void setup() {
     g_hal->begin();
 
     g_cfg.load();
-        Serial.printf("[EzClock] Loaded SSID='%s' TZ='%s'\n", g_cfg.wifi.ssid.c_str(), g_cfg.ntp.timezone.c_str());
+        Serial.printf("[EzClock] Loaded SSID='%s' TZ='%s' Hostname='%s'\n", g_cfg.wifi.ssid.c_str(), g_cfg.ntp.timezone.c_str(), g_cfg.net.hostname.c_str());
     TimeSvc::begin(g_cfg);
     g_web.begin(g_cfg, g_hal);
 

@@ -17,6 +17,9 @@ public:
 
   // Optional: restart any driver-specific startup/demo animation
   virtual void restartAnimation() {}
+
+  // Optional: AutoHue control (default no-op)
+  virtual void setAutoHue(bool /*enabled*/, uint16_t /*degPerMin*/) {}
 };
 
 HalDriver* createDefaultDriver();

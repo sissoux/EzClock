@@ -57,16 +57,30 @@ static const char WEB_UI[] PROGMEM = R"HTML(
       <input id="fade" type="number" min="0" max="5000" step="50" value="300" style="width:6rem;" />
       <button onclick="saveFade()">Apply</button>
     </div>
+    <div class="row" style="display:flex;align-items:center;gap:.5rem;">
+      <label for="autohue">AutoHue</label>
+      <input id="autohue" type="checkbox" onchange="applyAutoHueUI()" />
+      <label for="autohue_dpm">deg/min</label>
+      <input id="autohue_dpm" type="number" min="0" max="360" step="1" value="2" style="width:5rem;" />
+      <button onclick="saveAutoHue()">Save</button>
+    </div>
   </div>
   <fieldset class="row">
     <legend>Wi‑Fi</legend>
-    <div class="row"><label for="ssid">SSID</label> <input id="ssid" type="text" placeholder="YourWiFi"></div>
+    <div class="row" style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
+      <label for="ssid">SSID</label>
+      <input id="ssid" type="text" placeholder="YourWiFi" oninput="syncSsidInput()">
+      <select id="ssidList" onchange="selectSsid(this.value)"><option value="">-- scanning... --</option></select>
+      <button type="button" onclick="scanSsids()">Scan</button>
+    </div>
     <div class="row"><label for="pwd">Password</label> <input id="pwd" type="password" placeholder="••••••••"></div>
     <div class="row"><button onclick="saveWifi()">Save Wi‑Fi</button></div>
     <small>Device stays in AP+STA; after saving, it will try to connect to your Wi‑Fi.</small>
   </fieldset>
   <fieldset class="row">
-    <legend>Time</legend>
+    <legend>Time & Network</legend>
+    <div class="row"><label for="hostname">Hostname</label> <input id="hostname" type="text" placeholder="ezQlock"></div>
+    <div class="row"><button onclick="saveHostname()">Save Hostname</button></div>
     <div class="row"><label for="tz">Timezone</label> <input id="tz" type="text" placeholder="UTC0 or CET-1CEST,M3.5.0,M10.5.0/3"></div>
     <div class="row"><button onclick="saveTz()">Save Timezone</button></div>
     <small>POSIX TZ format. Examples: UTC0, CET-1CEST,M3.5.0,M10.5.0/3</small>
@@ -196,6 +210,9 @@ static const char WEB_UI[] PROGMEM = R"HTML(
         const res = await fetch('/api/status');
         if (!res.ok) return;
         const js = await res.json();
+        if (js && js.net && typeof js.net.hostname === 'string'){
+          document.getElementById('hostname').value = js.net.hostname;
+        }
         if (js && js.led){
           const rgb = hexToRgb(js.led.hex);
           if (rgb){
@@ -205,15 +222,48 @@ static const char WEB_UI[] PROGMEM = R"HTML(
           if (typeof js.led.fade === 'number'){
             document.getElementById('fade').value = js.led.fade;
           }
+          if (typeof js.led.autoHue === 'boolean'){
+            document.getElementById('autohue').checked = js.led.autoHue;
+          }
+          if (typeof js.led.autoHueDegPerMin === 'number'){
+            document.getElementById('autohue_dpm').value = js.led.autoHueDegPerMin;
+          }
+          applyAutoHueUI();
+        }
+        if (js && js.ntp && typeof js.ntp.timezone === 'string'){
+          document.getElementById('tz').value = js.ntp.timezone;
         }
       } catch(e) {
         console.warn('[UI] loadStatus error', e);
       }
     }
 
-    // initialize preview on load and fetch status
+    function applyAutoHueUI(){
+      const on = document.getElementById('autohue').checked;
+      // When AutoHue is on, colorpicker still shows color but device will override hue
+      // Optionally we could disable the Set button, but we keep it enabled for immediate feedback.
+    }
+
+    async function saveAutoHue(){
+      const enabled = document.getElementById('autohue').checked;
+      const degPerMin = document.getElementById('autohue_dpm').value;
+      const body = new URLSearchParams({ enabled, degPerMin });
+      try {
+        const res = await fetch('/api/autohue', { method: 'POST', headers: { 'Content-Type':'application/x-www-form-urlencoded' }, body });
+        const ok = res.ok;
+        if (!ok) throw new Error(await res.text());
+        alert('AutoHue saved.');
+      } catch(e){
+        console.error('[UI] /api/autohue error', e);
+        alert('Failed to save AutoHue');
+      }
+    }
+
+  // initialize preview on load and fetch status
     updatePreview();
     loadStatus();
+  // Kick off initial Wi‑Fi scan
+  scanSsids();
 
     async function saveWifi(){
       const ssid = document.getElementById('ssid').value.trim();
@@ -231,6 +281,50 @@ static const char WEB_UI[] PROGMEM = R"HTML(
       }
     }
 
+    function syncSsidInput(){
+      const v = document.getElementById('ssid').value;
+      const sel = document.getElementById('ssidList');
+      // If input matches an option, select it; else select none
+      let matched = false;
+      for (const opt of sel.options){
+        if (opt.value === v){ sel.value = v; matched = true; break; }
+      }
+      if (!matched) sel.value = '';
+    }
+
+    function selectSsid(v){
+      document.getElementById('ssid').value = v;
+    }
+
+    async function scanSsids(){
+      const sel = document.getElementById('ssidList');
+      sel.innerHTML = '<option value="">-- scanning... --</option>';
+      try {
+        const res = await fetch('/api/wifi/scan');
+        if (!res.ok){ sel.innerHTML = '<option value="">scan failed</option>'; return; }
+        const js = await res.json();
+        const list = Array.isArray(js.list) ? js.list : [];
+        // Sort by RSSI descending
+        list.sort((a,b)=> (b.rssi||-999) - (a.rssi||-999));
+        // Build options
+        let opts = '<option value="">-- select SSID --</option>';
+        for (const ap of list){
+          const ssid = ap.ssid || '';
+          if (!ssid) continue;
+          const rssi = ap.rssi;
+          const enc = ap.enc;
+          const strength = (rssi>=-55 ? '🟢' : rssi>=-70 ? '🟡' : '🟠');
+          opts += `<option value="${ssid}">${strength} ${ssid} (${rssi} dBm)</option>`;
+        }
+        sel.innerHTML = opts || '<option value="">(no networks)</option>';
+        // Re-apply selection if input already has value
+        syncSsidInput();
+      } catch(e) {
+        console.warn('[UI] scanSsids error', e);
+        sel.innerHTML = '<option value="">scan error</option>';
+      }
+    }
+
     async function saveTz(){
       const tz = document.getElementById('tz').value.trim();
       console.log('[UI] saveTz', tz);
@@ -243,6 +337,23 @@ static const char WEB_UI[] PROGMEM = R"HTML(
       } catch(e) {
         console.error('[UI] /api/timezone error', e);
         alert('Error while saving timezone');
+      }
+    }
+
+    async function saveHostname(){
+      let hostname = document.getElementById('hostname').value.trim();
+      if (!hostname) hostname = 'ezQlock';
+      // sanitize client-side similar to server (alnum + dash only, max 23)
+      hostname = hostname.replace(/[^A-Za-z0-9-]/g, '-').slice(0,23);
+      const body = new URLSearchParams({ hostname });
+      try {
+        const res = await fetch('/api/hostname', { method: 'POST', headers: { 'Content-Type':'application/x-www-form-urlencoded' }, body });
+        const txt = await res.text();
+        console.log('[UI] /api/hostname', res.status, txt);
+        alert(res.ok ? `Hostname saved. You can try http://${hostname}.local/ once connected to your Wi‑Fi.` : 'Failed to save hostname: ' + txt);
+      } catch(e){
+        console.error('[UI] /api/hostname error', e);
+        alert('Error while saving hostname');
       }
     }
   </script>
