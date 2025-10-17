@@ -65,6 +65,25 @@ static const char WEB_UI[] PROGMEM = R"HTML(
     </div>
   </div>
   <fieldset class="row">
+    <legend>Ambient brightness</legend>
+    <div class="row" style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
+      <label for="amb_min">Min (%)</label>
+      <input id="amb_min" type="number" min="0" max="100" step="1" value="10" style="width:5rem;" />
+      <label for="amb_max">Max (%)</label>
+      <input id="amb_max" type="number" min="0" max="100" step="1" value="100" style="width:5rem;" />
+      <label for="amb_thr">Full power threshold</label>
+      <input id="amb_thr" type="number" min="0" max="4095" step="1" value="1000" style="width:6rem;" />
+      <label for="amb_ms">Period (ms)</label>
+      <input id="amb_ms" type="number" min="50" max="5000" step="50" value="250" style="width:6rem;" />
+      <label for="amb_cnt">Avg count</label>
+      <input id="amb_cnt" type="number" min="1" max="60" step="1" value="20" style="width:5rem;" />
+      <button onclick="saveAmbient()">Save</button>
+      <button onclick="readAmbient()">Read now</button>
+      <span id="amb_readout" style="opacity:.8;"></span>
+    </div>
+    <small>Below threshold → Max brightness. Above threshold → brightness scales down to Min by 4095.</small>
+  </fieldset>
+  <fieldset class="row">
     <legend>Wi‑Fi</legend>
     <div class="row" style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
       <label for="ssid">SSID</label>
@@ -232,6 +251,13 @@ static const char WEB_UI[] PROGMEM = R"HTML(
         if (js && js.ntp && typeof js.ntp.timezone === 'string'){
           document.getElementById('tz').value = js.ntp.timezone;
         }
+        if (js && js.led){
+          if (typeof js.led.ambientMinPct === 'number') document.getElementById('amb_min').value = js.led.ambientMinPct;
+          if (typeof js.led.ambientMaxPct === 'number') document.getElementById('amb_max').value = js.led.ambientMaxPct;
+          if (typeof js.led.ambientFullPowerThreshold === 'number') document.getElementById('amb_thr').value = js.led.ambientFullPowerThreshold;
+          if (typeof js.led.ambientSampleMs === 'number') document.getElementById('amb_ms').value = js.led.ambientSampleMs;
+          if (typeof js.led.ambientAvgCount === 'number') document.getElementById('amb_cnt').value = js.led.ambientAvgCount;
+        }
       } catch(e) {
         console.warn('[UI] loadStatus error', e);
       }
@@ -353,6 +379,45 @@ static const char WEB_UI[] PROGMEM = R"HTML(
       } catch(e){
         console.error('[UI] /api/hostname error', e);
         alert('Error while saving hostname');
+      }
+    }
+
+    async function saveAmbient(){
+      let minPct = parseInt(document.getElementById('amb_min').value,10);
+      let maxPct = parseInt(document.getElementById('amb_max').value,10);
+      let threshold = parseInt(document.getElementById('amb_thr').value,10);
+      let periodMs = parseInt(document.getElementById('amb_ms').value,10);
+      let avgCount = parseInt(document.getElementById('amb_cnt').value,10);
+      if (isNaN(minPct)) minPct = 0; if (isNaN(maxPct)) maxPct = 100; if (isNaN(threshold)) threshold = 1000;
+      if (isNaN(periodMs)) periodMs = 250; if (isNaN(avgCount)) avgCount = 20;
+      minPct = Math.min(100, Math.max(0, minPct));
+      maxPct = Math.min(100, Math.max(minPct, maxPct));
+      threshold = Math.min(4095, Math.max(0, threshold));
+      periodMs = Math.min(5000, Math.max(50, periodMs));
+      avgCount = Math.min(60, Math.max(1, avgCount));
+      const body = new URLSearchParams({ minPct, maxPct, threshold, periodMs, avgCount });
+      try {
+        const res = await fetch('/api/ambient', { method: 'POST', headers: { 'Content-Type':'application/x-www-form-urlencoded' }, body });
+        const ok = res.ok;
+        if (!ok) throw new Error(await res.text());
+        alert('Ambient settings saved.');
+      } catch(e){
+        console.error('[UI] /api/ambient error', e);
+        alert('Failed to save Ambient settings');
+      }
+    }
+
+    async function readAmbient(){
+      const out = document.getElementById('amb_readout');
+      out.textContent = '…';
+      try {
+        const res = await fetch('/api/ambient/read');
+        if (!res.ok) throw new Error(await res.text());
+        const js = await res.json();
+        out.textContent = `raw=${js.raw} avg=${js.avg} supported=${js.supported?'yes':'no'}`;
+      } catch(e){
+        console.error('[UI] /api/ambient/read error', e);
+        out.textContent = 'error';
       }
     }
   </script>

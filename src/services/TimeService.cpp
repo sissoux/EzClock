@@ -44,15 +44,17 @@ namespace TimeSvc {
     lastLog = 0;
     tzCached = cfg.ntp.timezone;
     ntpCached = cfg.ntp.server;
-    // Always apply timezone immediately so localtime() uses it even before sync
+    // Apply timezone immediately so localtime() uses it even before sync, and set NTP when Wi‑Fi is ready
     setenv("TZ", tzCached.c_str(), 1);
     tzset();
     ensureWifi(cfg);
     if (wifiConnected) {
-      // Configure NTP server once Wi‑Fi is available
-      configTime(0, 0, ntpCached.c_str());
+      // Configure NTP and timezone together (Arduino helper)
+      configTzTime(tzCached.c_str(), ntpCached.c_str());
     }
   }
+
+  // (definition moved below as a qualified function)
 
   void loop() {
     #ifdef INHIBIT_TIME_SYNC
@@ -74,10 +76,10 @@ namespace TimeSvc {
     if (!wifiConnected && WiFi.status() == WL_CONNECTED) {
       wifiConnected = true;
       LOGI("WiFi connected: %s", WiFi.localIP().toString().c_str());
-      // Re-init NTP with cached config
+      // Re-init NTP with cached config and timezone
       setenv("TZ", tzCached.c_str(), 1);
       tzset();
-      configTime(0, 0, ntpCached.c_str());
+      configTzTime(tzCached.c_str(), ntpCached.c_str());
     }
     if (!wifiConnected) return;
     if (synced) {
@@ -119,5 +121,18 @@ namespace TimeSvc {
     if (t <= 0) return false;
     localtime_r(&t, &out);
     return true;
+  }
+}
+
+// Allow WebService to update NTP/TZ dynamically
+void TimeSvc::applyNtpConfig(const String& server, const String& timezone) {
+  TimeSvc::ntpCached = server;
+  TimeSvc::tzCached = timezone;
+  // Apply TZ immediately for localtime()
+  setenv("TZ", TimeSvc::tzCached.c_str(), 1);
+  tzset();
+  if (WiFi.status() == WL_CONNECTED) {
+    // Reconfigure NTP and TZ jointly
+    configTzTime(TimeSvc::tzCached.c_str(), TimeSvc::ntpCached.c_str());
   }
 }

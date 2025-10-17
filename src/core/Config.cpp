@@ -22,6 +22,11 @@ bool Config::load() {
   led.fadeMs = p.getUShort("l_fade", led.fadeMs);
   led.autoHue = p.getBool("l_ah_en", led.autoHue);
   led.autoHueDegPerMin = p.getUShort("l_ah_dpm", led.autoHueDegPerMin);
+  led.ambientMinPct = p.getUChar("l_ab_min", led.ambientMinPct);
+  led.ambientMaxPct = p.getUChar("l_ab_max", led.ambientMaxPct);
+  led.ambientFullPowerThreshold = p.getUShort("l_ab_thr", led.ambientFullPowerThreshold);
+  led.ambientSampleMs = p.getUShort("l_ab_ms", led.ambientSampleMs);
+  led.ambientAvgCount = p.getUChar("l_ab_cnt", led.ambientAvgCount);
   p.end();
   return true;
 }
@@ -45,6 +50,11 @@ bool Config::save() const {
   p.putUShort("l_fade", led.fadeMs);
   p.putBool("l_ah_en", led.autoHue);
   p.putUShort("l_ah_dpm", led.autoHueDegPerMin);
+  p.putUChar("l_ab_min", led.ambientMinPct);
+  p.putUChar("l_ab_max", led.ambientMaxPct);
+  p.putUShort("l_ab_thr", led.ambientFullPowerThreshold);
+  p.putUShort("l_ab_ms", led.ambientSampleMs);
+  p.putUChar("l_ab_cnt", led.ambientAvgCount);
   p.end();
   return true;
 }

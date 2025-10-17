@@ -26,6 +26,13 @@ static String g_apSsid;
 static String g_apPass;
 static Config* g_cfgPtr = nullptr; // to access configuration in WiFi callbacks
 
+// Verbose command logging helper: enabled only when compiled with -D VERBOSE
+#ifdef VERBOSE
+#define LOGV_CMD(...) LOGI(__VA_ARGS__)
+#else
+#define LOGV_CMD(...) do { } while(0)
+#endif
+
 #ifdef ARDUINO_ARCH_ESP32
 static void onWifiEvent(arduino_event_id_t event, arduino_event_info_t /*info*/){
   LOGI("WiFi event: %d", (int)event);
@@ -89,6 +96,7 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest* req){
+    LOGV_CMD("UI: GET /");
     req->send(200, "text/html", WEB_UI);
   });
 
@@ -109,6 +117,10 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
     }
     // AutoHue
     hal->setAutoHue(cfg.led.autoHue, cfg.led.autoHueDegPerMin);
+    // Ambient brightness control
+    hal->setAmbientControl(cfg.led.ambientMinPct, cfg.led.ambientMaxPct, cfg.led.ambientFullPowerThreshold);
+    // Ambient sampling parameters
+    hal->setAmbientSampling(cfg.led.ambientSampleMs, cfg.led.ambientAvgCount);
   }
 
   server.on("/health", HTTP_GET, [](AsyncWebServerRequest* req){
@@ -122,6 +134,7 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
   });
 
   server.on("/api/status", HTTP_GET, [&cfg](AsyncWebServerRequest* req){
+    LOGV_CMD("UI: GET /api/status");
     const bool sta = (WiFi.status() == WL_CONNECTED);
     const String staIp = sta ? WiFi.localIP().toString() : String("");
     const String apIp = WiFi.softAPIP().toString();
@@ -159,7 +172,12 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
     json += "\"hex\":\"" + hex + "\",";
   json += "\"fade\":" + String(cfg.led.fadeMs) + ",";
   json += "\"autoHue\":" + String(cfg.led.autoHue ? "true" : "false") + ",";
-  json += "\"autoHueDegPerMin\":" + String((unsigned)cfg.led.autoHueDegPerMin) + "}}";
+  json += "\"autoHueDegPerMin\":" + String((unsigned)cfg.led.autoHueDegPerMin) + ",";
+  json += "\"ambientMinPct\":" + String((unsigned)cfg.led.ambientMinPct) + ",";
+  json += "\"ambientMaxPct\":" + String((unsigned)cfg.led.ambientMaxPct) + ",";
+  json += "\"ambientFullPowerThreshold\":" + String((unsigned)cfg.led.ambientFullPowerThreshold) + ",";
+  json += "\"ambientSampleMs\":" + String((unsigned)cfg.led.ambientSampleMs) + ",";
+  json += "\"ambientAvgCount\":" + String((unsigned)cfg.led.ambientAvgCount) + "}}";
     req->send(200, "application/json", json);
   });
 
@@ -183,6 +201,7 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
     hex.trim();
     if (hex.startsWith("#")) hex.remove(0,1);
     if (hex.length() != 6) { req->send(400, "application/json", "{\"ok\":false,\"err\":\"bad hex\"}"); return; }
+    LOGV_CMD("UI: POST /api/color/default hex=#%s", hex.c_str());
     cfg.led.colorHex = String("#") + hex;
     bool ok = cfg.save();
     if (hal) {
@@ -201,6 +220,7 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
     String msStr = req->hasParam("ms", true) ? req->getParam("ms", true)->value() : String("0");
     uint16_t ms = (uint16_t) msStr.toInt();
     if (ms > 5000) ms = 5000; // clamp
+    LOGV_CMD("UI: POST /api/fade ms=%u", (unsigned)ms);
     cfg.led.fadeMs = ms;
     bool ok = cfg.save();
     if (hal) hal->setSmoothing(ms);
@@ -215,10 +235,15 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
     bool enabled = (enStr == "1" || enStr.equalsIgnoreCase("true") || enStr == "on");
     int dpm = dpmStr.toInt();
     if (dpm < 0) dpm = 0; if (dpm > 360) dpm = 360;
+    LOGV_CMD("UI: POST /api/autohue enabled=%s degPerMin=%d", enabled?"true":"false", dpm);
     cfg.led.autoHue = enabled;
     cfg.led.autoHueDegPerMin = (uint16_t)dpm;
     bool ok = cfg.save();
-    // If disabled, immediately apply persisted color to HAL
+    // Apply to HAL immediately
+    if (hal) {
+      hal->setAutoHue(cfg.led.autoHue, cfg.led.autoHueDegPerMin);
+    }
+    // If disabled, immediately apply persisted color frame
     if (!enabled && hal) {
       String hex = cfg.led.colorHex; String s = hex;
       if (s.startsWith("#")) s.remove(0,1);
@@ -230,7 +255,10 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
         hal->fill(r,g,b); hal->show();
       }
     }
-    req->send(ok ? 200 : 500, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
+    String resp = String("{\"ok\":") + (ok?"true":"false") + 
+                  ",\"enabled\":" + (cfg.led.autoHue?"true":"false") +
+                  ",\"degPerMin\":" + String((unsigned)cfg.led.autoHueDegPerMin) + "}";
+    req->send(ok ? 200 : 500, "application/json", resp);
   });
 
   // Update hostname (persist and apply). Also restarts mDNS if STA has IP.
@@ -241,6 +269,7 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
     if (hn.length() == 0) hn = "ezQlock";
     if (hn.length() > 23) hn = hn.substring(0,23);
     for (size_t i=0;i<hn.length();++i){ char c = hn[i]; if (!(isalnum((unsigned char)c) || c=='-')) { hn.setCharAt(i, '-'); } }
+  LOGV_CMD("UI: POST /api/hostname hostname=%s", hn.c_str());
     cfg.net.hostname = hn;
     bool ok = cfg.save();
 #ifdef ARDUINO_ARCH_ESP32
@@ -258,12 +287,45 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
     req->send(ok ? 200 : 500, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
   });
 
+  // Update ambient brightness control parameters
+  server.on("/api/ambient", HTTP_POST, [&cfg, hal](AsyncWebServerRequest* req){
+    String minStr = req->hasParam("minPct", true) ? req->getParam("minPct", true)->value() : String("10");
+    String maxStr = req->hasParam("maxPct", true) ? req->getParam("maxPct", true)->value() : String("100");
+    String thrStr = req->hasParam("threshold", true) ? req->getParam("threshold", true)->value() : String("1000");
+    String perStr = req->hasParam("periodMs", true) ? req->getParam("periodMs", true)->value() : String("250");
+    String cntStr = req->hasParam("avgCount", true) ? req->getParam("avgCount", true)->value() : String("20");
+    int minPct = minStr.toInt();
+    int maxPct = maxStr.toInt();
+    int thr = thrStr.toInt();
+    int per = perStr.toInt();
+    int cnt = cntStr.toInt();
+    if (minPct < 0) minPct = 0; if (minPct > 100) minPct = 100;
+    if (maxPct < 0) maxPct = 0; if (maxPct > 100) maxPct = 100;
+    if (maxPct < minPct) maxPct = minPct; // ensure ordering
+    if (thr < 0) thr = 0; if (thr > 4095) thr = 4095;
+    if (per < 50) per = 50; if (per > 5000) per = 5000;
+    if (cnt < 1) cnt = 1; if (cnt > 60) cnt = 60;
+    LOGV_CMD("UI: POST /api/ambient min=%d max=%d thr=%d periodMs=%d avgCount=%d", minPct, maxPct, thr, per, cnt);
+    cfg.led.ambientMinPct = (uint8_t)minPct;
+    cfg.led.ambientMaxPct = (uint8_t)maxPct;
+    cfg.led.ambientFullPowerThreshold = (uint16_t)thr;
+    cfg.led.ambientSampleMs = (uint16_t)per;
+    cfg.led.ambientAvgCount = (uint8_t)cnt;
+    bool ok = cfg.save();
+    if (hal) {
+      hal->setAmbientControl(cfg.led.ambientMinPct, cfg.led.ambientMaxPct, cfg.led.ambientFullPowerThreshold);
+      hal->setAmbientSampling(cfg.led.ambientSampleMs, cfg.led.ambientAvgCount);
+    }
+    req->send(ok ? 200 : 500, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
+  });
+
   server.on("/api/wifi", HTTP_POST, [&cfg](AsyncWebServerRequest* req){
     String ssid;
     String password;
     if (req->hasParam("ssid", true)) ssid = req->getParam("ssid", true)->value();
     if (req->hasParam("password", true)) password = req->getParam("password", true)->value();
     ssid.trim();
+    LOGV_CMD("UI: POST /api/wifi ssid='%s' pwd.len=%u", ssid.c_str(), (unsigned)password.length());
     if (ssid.length() == 0) { req->send(400, "application/json", "{\"ok\":false,\"err\":\"empty ssid\"}"); return; }
     cfg.wifi.ssid = ssid;
     cfg.wifi.password = password;
@@ -280,6 +342,7 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
 
   // Scan nearby Wi‑Fi networks
   server.on("/api/wifi/scan", HTTP_GET, [](AsyncWebServerRequest* req){
+    LOGV_CMD("UI: GET /api/wifi/scan");
     // Synchronous scan; typical duration ~1-3s
     int n = WiFi.scanNetworks(/*async=*/false, /*hidden=*/true);
     if (n < 0) n = 0;
@@ -311,12 +374,25 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
     if (req->hasParam("tz", true)) tz = req->getParam("tz", true)->value();
     tz.trim();
     if (tz.isEmpty()) { req->send(400, "application/json", "{\"ok\":false,\"err\":\"empty tz\"}"); return; }
+    LOGV_CMD("UI: POST /api/timezone tz=%s", tz.c_str());
     cfg.ntp.timezone = tz;
     bool ok = cfg.save();
-    setenv("TZ", cfg.ntp.timezone.c_str(), 1);
-    tzset();
+    // Apply immediately and update TimeSvc cache so reconnects keep this TZ
+    TimeSvc::applyNtpConfig(cfg.ntp.server, cfg.ntp.timezone);
     LOGI("Timezone set to %s", cfg.ntp.timezone.c_str());
     req->send(ok ? 200 : 500, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
+  });
+
+  // Read current ambient ADC value from the driver (if supported)
+  server.on("/api/ambient/read", HTTP_GET, [hal](AsyncWebServerRequest* req){
+    LOGV_CMD("UI: GET /api/ambient/read");
+    uint16_t raw = 0, avg = 0;
+    bool have = false;
+    if (hal) {
+      have = hal->getAmbientReading(raw, avg);
+    }
+    String json = String("{\"ok\":true,\"supported\":") + (have?"true":"false") + ",\"raw\":" + String(raw) + ",\"avg\":" + String(avg) + "}";
+    req->send(200, "application/json", json);
   });
 
   server.onNotFound([](AsyncWebServerRequest* req){ req->send(404, "text/plain", "Not found"); });
