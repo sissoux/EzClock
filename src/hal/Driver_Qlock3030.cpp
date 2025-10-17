@@ -8,6 +8,7 @@
 
 #ifdef USE_QLOCK3030
 
+#include <Arduino.h>
 #include "HalDriver.hpp"
 #include "../services/TimeService.hpp"
 #include "../core/Log.hpp"
@@ -31,9 +32,23 @@
 #define QLOCK_COLS 13
 #endif
 
+#ifndef AMBIANT_ANALOG_PIN
+#define AMBIANT_ANALOG_PIN 4 // A2 on XIAO ESP32C3
+#endif
+
+#ifndef AMBIANT_PULLUP_OUT_PIN
+#define AMBIANT_PULLUP_OUT_PIN 5 // Force this pin high as requested
+#endif
+
 class DriverQlock3030 : public HalDriver {
 public:
   void begin() override {
+    // Force pin 5 HIGH
+    pinMode(AMBIANT_PULLUP_OUT_PIN, OUTPUT);
+    digitalWrite(AMBIANT_PULLUP_OUT_PIN, HIGH);
+    // Prepare ADC pin (A2 / GPIO4)
+    pinMode(AMBIANT_ANALOG_PIN, INPUT);
+
     FastLED.addLeds<WS2812B, LED_PIN, GRB>(_leds, QLOCK_LED_COUNT);
     FastLED.setBrightness(128);
     fill_solid(_leds, QLOCK_LED_COUNT, CRGB::Black);
@@ -42,18 +57,74 @@ public:
     _lastMinute = 255; // force first render
     _dirty = true;
     _lastHueUpdateMs = millis();
+    _lastAdcMs = millis();
+    _fadeMs = 300; // default smoothing
   }
 
   void setAutoHue(bool enabled, uint16_t degPerMin) override {
     _autoHueEnabled = enabled;
     _autoHueDegPerMin = degPerMin;
+    // Trigger immediate re-render towards new color behavior
+    _needFadeFrame = true;
+    _dirty = true;
+    // Update render color immediately to reflect new mode
+    if (_autoHueEnabled) {
+      CHSV hsv = rgb2hsv_approximate(CRGB(_colorR,_colorG,_colorB));
+      hsv.h = (uint8_t)lroundf((_autoHueAccumDeg / 360.0f) * 255.0f);
+      CRGB rgb; hsv2rgb_rainbow(hsv, rgb);
+      _renderR = rgb.r; _renderG = rgb.g; _renderB = rgb.b;
+    } else {
+      _renderR = _colorR; _renderG = _colorG; _renderB = _colorB;
+    }
+  }
+
+  void setSmoothing(uint16_t ms) override {
+    _fadeMs = ms;
+  }
+
+  void setAmbientControl(uint8_t minPct, uint8_t maxPct, uint16_t threshold) override {
+    if (maxPct < minPct) maxPct = minPct;
+    if (minPct > 100) minPct = 100;
+    if (maxPct > 100) maxPct = 100;
+    if (threshold > 4095) threshold = 4095;
+    _ambMinPct = minPct;
+    _ambMaxPct = maxPct;
+    _ambThreshold = threshold;
+    _dirty = true;
   }
 
   void loop() override {
     const uint32_t nowMs = millis();
-    if (nowMs - _lastPollMs < 200) {
-      // Push pending color updates even if not polling time
-      if (_dirty) { applyToHardware(); _dirty = false; }
+    // Periodic ADC read on A2 (GPIO4)
+    if (nowMs - _lastAdcMs >= _adcPeriodMs) {
+      _lastAdcMs = nowMs;
+      _adcRaw = (uint16_t)analogRead(AMBIANT_ANALOG_PIN); // default 12-bit on ESP32 (0..4095)
+      // Push into ring buffer sized by _adcWindow
+      if (_adcWindow == 0) _adcWindow = 1;
+      _adcBuf[_adcIndex] = _adcRaw;
+      _adcIndex = (_adcIndex + 1) % _adcWindow;
+      if (_adcCount < _adcWindow) _adcCount++;
+      // update moving average and flag dirty so brightness can change
+      uint32_t sum = 0;
+      for (uint8_t i = 0; i < _adcCount; ++i) sum += _adcBuf[i];
+      _adcAvg = (uint16_t)((sum + (_adcCount/2)) / _adcCount);
+      _dirty = true;
+    }
+    // Log average over last 10 seconds every 10 seconds
+    if (nowMs - _lastAdcLogMs >= 10000) {
+      _lastAdcLogMs = nowMs;
+      if (_adcCount > 0) {
+        uint32_t sum = 0;
+        for (uint8_t i = 0; i < _adcCount; ++i) sum += _adcBuf[i];
+        uint32_t avg = (sum + (_adcCount/2)) / _adcCount; // rounded integer average
+        LOGI("ADC avg(10s)=%u from %u samples", (unsigned)avg, (unsigned)_adcCount);
+      } else {
+        LOGI("ADC avg(10s)=N/A (no samples)");
+      }
+    }
+    if (nowMs - _lastPollMs < _renderIntervalMs) {
+      // While below the render interval, still advance fades and any pending updates
+      if (_fading || _dirty) { applyToHardware(); _dirty = false; }
       return;
     }
     _lastPollMs = nowMs;
@@ -105,9 +176,10 @@ public:
       _lastMinute = mm;
       const uint32_t mask = timeMaskUpdate(hh, mm);
       pixelStateUpdate(mask);
-      // Map state to LEDs buffer with current color
-      renderFrame();
-      FastLED.show();
+  // Map state to TARGET buffer and start fade
+  renderFrame();
+  _needFadeFrame = true;
+  applyToHardware();
     } else {
       // Optional: minute dots animation based on seconds could go here
     }
@@ -119,17 +191,49 @@ public:
 
   void fill(uint8_t r, uint8_t g, uint8_t b) override {
     // Store color for rendering words; applied at next render/show
-    _colorR = r; _colorG = g; _colorB = b; _dirty = true;
+    _colorR = r; _colorG = g; _colorB = b;
+    // Rebuild and fade to the new color immediately on next apply/show
+    _needFadeFrame = true;
+    _dirty = true;
+    // Update render color now so renderFrame() uses the latest color immediately
+    if (_autoHueEnabled) {
+      CHSV hsv = rgb2hsv_approximate(CRGB(_colorR,_colorG,_colorB));
+      hsv.h = (uint8_t)lroundf((_autoHueAccumDeg / 360.0f) * 255.0f);
+      CRGB rgb; hsv2rgb_rainbow(hsv, rgb);
+      _renderR = rgb.r; _renderG = rgb.g; _renderB = rgb.b;
+    } else {
+      _renderR = _colorR; _renderG = _colorG; _renderB = _colorB;
+    }
   }
 
   void clear() override { fill_solid(_leds, QLOCK_LED_COUNT, CRGB::Black); _dirty = true; }
 
   void show() override { applyToHardware(); _dirty = false; FastLED.show(); }
 
+  void setAmbientSampling(uint16_t periodMs, uint8_t avgCount) override {
+    if (periodMs < 50) periodMs = 50; // avoid too fast
+    if (periodMs > 5000) periodMs = 5000;
+    if (avgCount == 0) avgCount = 1;
+    if (avgCount > ADC_MAX_WINDOW) avgCount = ADC_MAX_WINDOW;
+    _adcPeriodMs = periodMs;
+    _adcWindow = avgCount;
+    // Reset averaging buffer safely
+    _adcIndex = 0;
+    _adcCount = 0;
+  }
+
+  bool getAmbientReading(uint16_t& raw, uint16_t& avg) override {
+    raw = _adcRaw;
+    avg = _adcAvg;
+    return true;
+  }
+
   uint16_t size() const override { return QLOCK_LED_COUNT; }
 
 private:
   CRGB _leds[QLOCK_LED_COUNT];
+  CRGB _target[QLOCK_LED_COUNT];
+  CRGB _start[QLOCK_LED_COUNT];
   uint8_t _colorR{255}, _colorG{255}, _colorB{255};
   uint8_t _renderR{255}, _renderG{255}, _renderB{255};
   uint32_t _lastPollMs{0};
@@ -137,11 +241,33 @@ private:
   uint8_t _lastMinute{255};
   bool _dirty{false};
   bool _firstFrame{true};
+  // Fading
+  uint16_t _fadeMs{300};
+  bool _fading{false};
+  bool _needFadeFrame{false};
+  uint32_t _fadeStartMs{0};
   // AutoHue
   bool _autoHueEnabled{false};
   uint16_t _autoHueDegPerMin{2};
   float _autoHueAccumDeg{0.0f};
   uint32_t _lastHueUpdateMs{0};
+  // ADC reading
+  uint16_t _adcRaw{0};
+  uint32_t _lastAdcMs{0};
+  static constexpr uint8_t ADC_MAX_WINDOW = 60;
+  uint16_t _adcBuf[ADC_MAX_WINDOW] = {0};
+  uint8_t _adcIndex{0};
+  uint8_t _adcCount{0};
+  uint32_t _lastAdcLogMs{0};
+  uint16_t _adcAvg{0};
+  uint16_t _adcPeriodMs{250};
+  uint8_t _adcWindow{20};
+  uint16_t _renderIntervalMs{100};
+
+  // Ambient control parameters
+  uint8_t _ambMinPct{10};
+  uint8_t _ambMaxPct{100};
+  uint16_t _ambThreshold{1000};
 
   // Geometry and masks (adapted from Example/MyQlock.h)
   // Mapping converts matrix (row,col) to strip index (150=unused)
@@ -196,25 +322,66 @@ private:
   }
 
   void renderFrame() {
-    // Map AbsoluteOn into the linear LED buffer with current RGB color
+    // Map AbsoluteOn into the linear TARGET buffer with current RGB color
     for (uint8_t x = 0; x < QLOCK_COLS; x++) {
       for (uint8_t y = 0; y < QLOCK_ROWS; y++) {
         uint8_t idx = Mapping[y][x];
         if (idx >= QLOCK_LED_COUNT) continue; // 150 markers ignored
-        if (AbsoluteOn[y][x]) _leds[idx].setRGB(_renderR, _renderG, _renderB);
-        else _leds[idx] = CRGB::Black;
+        if (AbsoluteOn[y][x]) _target[idx].setRGB(_renderR, _renderG, _renderB);
+        else _target[idx] = CRGB::Black;
       }
     }
   }
 
   void applyToHardware() {
-    // Re-apply current color to the last frame without recomputing time
-    for (uint8_t x = 0; x < QLOCK_COLS; x++) {
-      for (uint8_t y = 0; y < QLOCK_ROWS; y++) {
-        uint8_t idx = Mapping[y][x];
-        if (idx >= QLOCK_LED_COUNT) continue;
-        if (AbsoluteOn[y][x]) _leds[idx].setRGB(_renderR, _renderG, _renderB);
-        else _leds[idx] = CRGB::Black;
+    // Compute target brightness based on ambient ADC average and configured mapping
+    uint8_t targetBrightness = 128; // default
+    uint8_t minPct = _ambMinPct;
+    uint8_t maxPct = _ambMaxPct;
+    if (maxPct < minPct) maxPct = minPct;
+    if (maxPct > 100) maxPct = 100;
+    if (minPct > 100) minPct = 100;
+    if (_adcAvg <= _ambThreshold) {
+      targetBrightness = (uint8_t)lroundf((maxPct / 100.0f) * 255.0f);
+    } else {
+      // Map [thr..4095] -> [maxPct..minPct] linearly
+      uint16_t a = _adcAvg;
+      uint16_t thr = _ambThreshold;
+      if (a > 4095) a = 4095;
+      if (thr > 4095) thr = 4095;
+      if (a < thr) a = thr;
+      uint16_t denom = (uint16_t)(4095 - thr);
+      float t = denom == 0 ? 1.0f : (float)(a - thr) / (float)denom; // 0..1
+      float pct = (float)maxPct + t * ((float)minPct - (float)maxPct);
+      if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+      targetBrightness = (uint8_t)lroundf((pct / 100.0f) * 255.0f);
+    }
+    FastLED.setBrightness(targetBrightness);
+    const uint32_t nowMs = millis();
+    if (_needFadeFrame && !_fading) {
+      // Rebuild target to reflect latest color state (e.g., AutoHue/color change)
+      renderFrame();
+      for (uint16_t i = 0; i < QLOCK_LED_COUNT; ++i) _start[i] = _leds[i];
+      _fadeStartMs = nowMs;
+      _fading = (_fadeMs > 0);
+      _needFadeFrame = false;
+      if (!_fading) {
+        for (uint16_t i = 0; i < QLOCK_LED_COUNT; ++i) _leds[i] = _target[i];
+      }
+    }
+    if (_fading) {
+      uint32_t dt = nowMs - _fadeStartMs;
+      uint32_t dur = _fadeMs;
+      if (dur == 0 || dt >= dur) {
+        _fading = false;
+        for (uint16_t i = 0; i < QLOCK_LED_COUNT; ++i) _leds[i] = _target[i];
+      } else {
+        uint8_t amt = (uint8_t)((dt * 255UL) / dur);
+        for (uint16_t i = 0; i < QLOCK_LED_COUNT; ++i) {
+          CRGB c = _start[i];
+          nblend(c, _target[i], amt);
+          _leds[i] = c;
+        }
       }
     }
     FastLED.show();

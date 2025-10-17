@@ -10,4 +10,6 @@ namespace TimeSvc {
   bool isWifiConnected();
   bool isSynced();
   bool getLocal(struct tm& out);
+  // Apply new NTP server and timezone at runtime and reconfigure if Wi‑Fi is connected
+  void applyNtpConfig(const String& server, const String& timezone);
 }
