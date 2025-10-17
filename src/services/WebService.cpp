@@ -10,10 +10,12 @@
   #include <WiFi.h>
   #include <AsyncTCP.h>
   #include <ESPAsyncWebServer.h>
+  #include <ESPmDNS.h>
 #elif defined(ARDUINO_ARCH_ESP8266)
   #include <ESP8266WiFi.h>
   #include <ESPAsyncTCP.h>
   #include <ESPAsyncWebServer.h>
+  #include <ESP8266mDNS.h>
 #endif
 
 static AsyncWebServer server(80);
@@ -25,6 +27,15 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
 
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false); // improve responsiveness on C3
+  // Set default hostname for STA/AP so device is reachable as ezclock.local via mDNS
+#ifdef ARDUINO_ARCH_ESP32
+  WiFi.setHostname("ezclock");
+#ifdef WIFI_AP_STA
+  WiFi.softAPsetHostname("ezclock");
+#endif
+#elif defined(ARDUINO_ARCH_ESP8266)
+  WiFi.hostname("ezclock");
+#endif
   // Optional: configure default AP IP/subnet to known 192.168.4.1
   WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
   g_apSsid = "EzClock-AP";
@@ -37,6 +48,16 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
   if (!cfg.wifi.ssid.isEmpty()) {
     WiFi.begin(cfg.wifi.ssid.c_str(), cfg.wifi.password.c_str());
   }
+
+  // Start mDNS so device can be reached at ezclock.local
+#if defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_ESP8266)
+  if (!MDNS.begin("ezclock")) {
+    LOGW("mDNS start failed; ezclock.local may not resolve");
+  } else {
+    MDNS.addService("http", "tcp", 80);
+    LOGI("mDNS started: http://ezclock.local/");
+  }
+#endif
 
 #ifdef ARDUINO_ARCH_ESP32
   WiFi.onEvent([](WiFiEvent_t e){
@@ -198,10 +219,50 @@ void WebService::begin(Config& cfg, HalDriver* hal) {
     req->send(ok ? 200 : 500, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
   });
 
+  // Register OTA routes before starting the server
+  setupManualOTA();
   server.onNotFound([](AsyncWebServerRequest* req){ req->send(404, "text/plain", "Not found"); });
   server.begin();
 }
 
 void WebService::loop() {
   // Async web server runs in background
+}
+
+// Manual OTA update page and handler
+#ifdef ARDUINO_ARCH_ESP32
+#include <Update.h>
+#endif
+
+void WebService::setupManualOTA() {
+#ifdef ARDUINO_ARCH_ESP32
+  server.on("/ManualOTA", HTTP_GET, [](AsyncWebServerRequest* req){
+    req->send(200, "text/html",
+      "<h2>Manual OTA Update</h2>"
+      "<form method='POST' action='/ManualOTA' enctype='multipart/form-data'>"
+      "<input type='file' name='firmware'>"
+      "<input type='submit' value='Update'>"
+      "</form>"
+    );
+  });
+  server.on("/ManualOTA", HTTP_POST,
+    [](AsyncWebServerRequest* req){
+      bool ok = !Update.hasError();
+      req->send(200, "text/html", ok ? "Update Success. Rebooting..." : "Update Failed!");
+      if (ok) {
+        delay(1000);
+        ESP.restart();
+      }
+    },
+    [](AsyncWebServerRequest* req, String filename, size_t index, uint8_t *data, size_t len, bool final){
+      if (!index) {
+        Update.begin(UPDATE_SIZE_UNKNOWN);
+      }
+      Update.write(data, len);
+      if (final) {
+        Update.end(true);
+      }
+    }
+  );
+#endif
 }

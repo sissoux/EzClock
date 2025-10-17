@@ -8,4 +8,6 @@ class WebService {
 public:
   void begin(Config& cfg, HalDriver* hal);
   void loop();
+private:
+  void setupManualOTA();
 };

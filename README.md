@@ -31,3 +31,6 @@ EzClock aims to be a **reusable base** for all your clock projects:
 
 💡 **EzClock** is designed for makers who like control, flexibility,  
 and beautiful, connected clocks — without reinventing the Wi-Fi stack every time.
+
+
+Platformio update OTA : C:\Users\alexis\.platformio\penv\Scripts\platformio.exe run -e esp32c3-ota --target upload --upload-port ezclock.local

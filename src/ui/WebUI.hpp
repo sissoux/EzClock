@@ -17,10 +17,11 @@ static const char WEB_UI[] PROGMEM = R"HTML(
     legend { padding: 0 .5rem; color: #555; }
     label { display: inline-block; min-width: 7rem; }
     input[type=text], input[type=password] { padding: .3rem .5rem; }
+    .ota-link { float: right; font-size: 1rem; }
   </style>
 </head>
 <body>
-  <h1>EzClock</h1>
+  <h1>EzClock <a class="ota-link" href="/ManualOTA" title="Manual OTA Update">OTA Update</a></h1>
   <div class="row">
     <strong>Color (HSV)</strong>
     <div class="row">
